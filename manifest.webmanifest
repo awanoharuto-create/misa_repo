@@ -1,0 +1,9 @@
+{
+  "name": "IVスキャン - Pokémon GO個体値判定",
+  "short_name": "IVスキャン",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f6f1e9",
+  "theme_color": "#f26f63",
+  "description": "スクリーンショットから3つの個体値を端末内で判定します。"
+}
