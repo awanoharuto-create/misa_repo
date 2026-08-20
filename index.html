@@ -1,55 +1,10 @@
-<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#f26f63">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="IVスキャン">
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="stylesheet" href="styles.css">
-  <title>IVスキャン</title>
-</head>
-<body>
-  <main>
-    <header>
-      <span class="eyebrow">POKÉMON GO 個体値判定</span>
-      <h1>スクショから<br><em>3秒</em>で判定。</h1>
-      <p>「博士に調べてもらう」画面を選ぶだけ。画像は端末の外へ送信しません。</p>
-    </header>
-
-    <section class="card picker" id="picker">
-      <div class="ball" aria-hidden="true"><i></i></div>
-      <h2>評価画面を選択</h2>
-      <p>3本の評価バーがすべて見えるスクリーンショットを使ってください。</p>
-      <label class="primary" for="file">スクリーンショットを選ぶ</label>
-      <input id="file" type="file" accept="image/*">
-    </section>
-
-    <section class="card result" id="result" hidden aria-live="polite">
-      <div class="result-head">
-        <div>
-          <span class="eyebrow">判定結果</span>
-          <h2 id="percent">—%</h2>
-        </div>
-        <div class="grade" id="grade">—</div>
-      </div>
-      <div class="stats">
-        <div class="stat"><div><span>こうげき</span><b id="attackText">— / 15</b></div><div class="meter"><i id="attackBar"></i></div></div>
-        <div class="stat"><div><span>ぼうぎょ</span><b id="defenseText">— / 15</b></div><div class="meter"><i id="defenseBar"></i></div></div>
-        <div class="stat hp"><div><span>HP</span><b id="hpText">— / 15</b></div><div class="meter"><i id="hpBar"></i></div></div>
-      </div>
-      <details>
-        <summary>読み取り位置を確認</summary>
-        <canvas id="preview"></canvas>
-        <p>枠と3本の線がゲーム内の評価バーに重なっていれば正常です。</p>
-      </details>
-      <button class="secondary" id="again" type="button">別の画像を調べる</button>
-    </section>
-
-    <p class="foot">非公式の個人用ツールです。Pokémon GOおよびNianticとは関係ありません。</p>
-  </main>
-  <script src="app.js"></script>
-</body>
-</html>
+<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#f26f63"><link rel="manifest" href="manifest.webmanifest"><link rel="stylesheet" href="styles.css"><title>Pokémon GO IVスキャン</title></head><body><main>
+<header><span class="eyebrow">POKÉMON GO 個体値チェック</span><h1>スクショから<br><em>個体値＋技構成</em></h1><p>「博士に調べてもらう」画面を選ぶだけ。画像は端末の外へ送信しません。</p></header>
+<section class="card picker" id="picker"><div class="ball"><i></i></div><h2>評価画面を選択</h2><p>ポケモン名と3本の評価バーが見えるスクリーンショットを使ってください。</p><label class="primary" for="file">スクリーンショットを選ぶ</label><input id="file" type="file" accept="image/*"></section>
+<section class="card result" id="result" hidden aria-live="polite"><div class="pokemon-head"><div><span class="eyebrow">このポケモンは…</span><h2 class="pokemon-name" id="pokemonName">判定中…</h2></div><span class="recognition" id="recognition"></span></div>
+<div class="name-fallback" id="nameFallback" hidden><label for="pokemonSelect">名前を選ぶと技構成を表示できます</label><input id="pokemonSelect" list="pokemonList" placeholder="例：ピカチュウ"><datalist id="pokemonList"></datalist></div>
+<div class="result-head"><div><span class="eyebrow">個体値</span><h2 id="percent">—</h2></div><div class="grade" id="grade">—</div></div>
+<div class="stats"><div class="stat"><div><span>こうげき</span><b id="attackText">— / 15</b></div><div class="meter"><i id="attackBar"></i></div></div><div class="stat"><div><span>ぼうぎょ</span><b id="defenseText">— / 15</b></div><div class="meter"><i id="defenseBar"></i></div></div><div class="stat hp"><div><span>HP</span><b id="hpText">— / 15</b></div><div class="meter"><i id="hpBar"></i></div></div></div>
+<section class="moves" id="moves" hidden><span class="eyebrow">おすすめ技構成</span><h3 id="moveTitle"></h3><div class="move-grid"><div><small>ノーマル技</small><b id="fastMove"></b></div><div><small>スペシャル技</small><b id="chargedMoves"></b></div></div><p id="moveNote"></p></section>
+<details><summary>読み取り位置を確認</summary><canvas id="preview"></canvas><p>水色の線が3本の評価バーに重なっていれば正常です。</p></details><button class="secondary" id="again">別の画像を調べる</button></section>
+<p class="foot">非公式の個人用ツールです。技は環境やアップデートで変わることがあります。</p></main><script src="app.js"></script></body></html>
