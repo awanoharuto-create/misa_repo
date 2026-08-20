@@ -1,14 +1,18 @@
 const $=id=>document.getElementById(id),fileInput=$('file');
 const API='https://pogoapi.net/api/v1/',SPRITES='https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/',CSV='https://raw.githubusercontent.com/PokeAPI/pokeapi/master/data/v2/csv/';
 const DEFAULT_CROP={x:0,y:.07,w:1,h:.325};
-let catalog=[],movePools=[],fastMoves=[],chargedMoves=[],moveJa=new Map(),currentBitmap=null,cropRect=null,cropStart=null,visionModel=null,ocrWorker=null;
+let catalog=[],movePools=[],fastMoves=[],chargedMoves=[],pokemonStats=[],cpms=[],moveJa=new Map(),currentBitmap=null,cropRect=null,cropStart=null,visionModel=null,ocrWorker=null,currentPokemon=null;
+const FORM_JA={normal:'通常のすがた',alola:'アローラのすがた',alolan:'アローラのすがた',galar:'ガラルのすがた',galarian:'ガラルのすがた',hisui:'ヒスイのすがた',hisuian:'ヒスイのすがた',paldea:'パルデアのすがた',paldean:'パルデアのすがた',origin:'オリジンフォルム',altered:'アナザーフォルム',attack:'アタックフォルム',defense:'ディフェンスフォルム',speed:'スピードフォルム',incarnate:'けしんフォルム',therian:'れいじゅうフォルム',aria:'ボイスフォルム',pirouette:'ステップフォルム',sunshine:'ポジフォルム',overcast:'ネガフォルム',east_sea:'ひがしのうみ',west_sea:'にしのうみ',midday:'まひるのすがた',midnight:'まよなかのすがた',dusk:'たそがれのすがた',solo:'たんどくのすがた',school:'むれたすがた',average:'ふつうのサイズ',small:'ちいさいサイズ',large:'おおきいサイズ',super:'とくだいサイズ'};
+const EXTRA_CPMS=[[45.5,.817803806],[46,.82029999],[46.5,.822803778],[47,.82529999],[47.5,.82780375],[48,.83029999],[48.5,.832803753],[49,.835300028],[49.5,.837803755],[50,.84029999]];
+fileInput.addEventListener('change',()=>{$('ivPurpose').hidden=true});
 
 fileInput.addEventListener('change',async()=>{const file=fileInput.files?.[0];if(!file)return;try{currentBitmap=await createImageBitmap(file);cropRect=null;showResult(analyze(currentBitmap));initCropEditor();$('scanStatus').hidden=false;$('candidates').hidden=true;$('nameFallback').hidden=true;$('pokemonName').textContent='捕獲情報を読取中…';await loadData();const caught=await identifyByCatchText(currentBitmap);if(caught){await selectPokemon(caught);$('recognition').textContent='捕獲情報から判定';$('scanStatus').hidden=true;$('nameFallback').hidden=false}else{setProgress('名前を読めなかったため画像で照合します');$('pokemonName').textContent='画像照合中…';await classify(currentBitmap)}}catch(e){$('scanStatus').hidden=true;$('nameFallback').hidden=false;$('pokemonName').textContent='判定できませんでした';$('recognition').textContent='手動検索できます';console.error(e);alert(`処理できませんでした: ${e.message}`)}});
 $('pokemonSelect').addEventListener('change',e=>{const p=catalog.find(x=>x.ja===e.target.value);if(p)selectPokemon(p)});
 $('again').addEventListener('click',()=>{fileInput.value='';$('result').hidden=true;$('picker').hidden=false;$('moves').hidden=true;$('candidates').hidden=true;scrollTo({top:0,behavior:'smooth'})});
 $('rematch').addEventListener('click',async()=>{if(!currentBitmap||!cropRect)return;try{$('scanStatus').hidden=false;$('candidates').hidden=true;await classify(currentBitmap,cropRect)}catch(e){alert(`再照合できませんでした: ${e.message}`)}});
+$('formSelect').addEventListener('change',e=>{if(currentPokemon){showMoves(currentPokemon,e.target.value);updateOptimalIV(currentPokemon,e.target.value)}});
 
-async function loadData(){if(catalog.length)return;setProgress('全ポケモンと日本語名を取得中…');const text=path=>fetch(CSV+path).then(r=>{if(!r.ok)throw Error('日本語データを取得できません');return r.text()});const [released,pools,fast,charged,namesCsv,movesCsv]=await Promise.all([get('released_pokemon.json'),get('current_pokemon_moves.json'),get('fast_moves.json'),get('charged_moves.json'),text('pokemon_species_names.csv'),text('move_names.csv')]);movePools=pools;fastMoves=fast;chargedMoves=charged;const jaNames=new Map(),moveRows=new Map();for(const line of namesCsv.split(/\r?\n/)){const m=line.match(/^(\d+),1,("(?:[^"]|"")*"|[^,]*)/);if(m)jaNames.set(+m[1],csvValue(m[2]))}for(const line of movesCsv.split(/\r?\n/)){const m=line.match(/^(\d+),(1|9),("(?:[^"]|"")*"|[^,]*)/);if(m){const row=moveRows.get(+m[1])||{};row[m[2]]=csvValue(m[3]);moveRows.set(+m[1],row)}}for(const row of moveRows.values())if(row[1]&&row[9])moveJa.set(normalize(row[9]),row[1]);const releasedIds=new Set(Object.values(released).map(x=>+x.id)),seen=new Set();catalog=pools.filter(x=>releasedIds.has(+x.pokemon_id)&&!seen.has(+x.pokemon_id)&&seen.add(+x.pokemon_id)).map(x=>({id:+x.pokemon_id,name:x.pokemon_name,ja:jaNames.get(+x.pokemon_id)||`図鑑番号 ${x.pokemon_id}`,sprite:`${SPRITES}${x.pokemon_id}.png`,art:`${SPRITES}other/home/${x.pokemon_id}.png`}));catalog.forEach(p=>{const o=document.createElement('option');o.value=p.ja;$('pokemonList').append(o)});if(!catalog.length)throw Error('図鑑データを取得できません')}
+async function loadData(){if(catalog.length)return;setProgress('全ポケモンと日本語名を取得中…');const text=path=>fetch(CSV+path).then(r=>{if(!r.ok)throw Error('日本語データを取得できません');return r.text()});const [released,pools,fast,charged,stats,multipliers,namesCsv,movesCsv]=await Promise.all([get('released_pokemon.json'),get('current_pokemon_moves.json'),get('fast_moves.json'),get('charged_moves.json'),get('pokemon_stats.json'),get('cp_multiplier.json'),text('pokemon_species_names.csv'),text('move_names.csv')]);movePools=pools;fastMoves=fast;chargedMoves=charged;pokemonStats=stats;cpms=multipliers.map(x=>({level:+x.level,multiplier:+x.multiplier})).filter(x=>x.multiplier);for(const [level,multiplier] of EXTRA_CPMS)if(!cpms.some(x=>x.level===level))cpms.push({level,multiplier});cpms=cpms.filter(x=>x.level<=50).sort((a,b)=>a.level-b.level);const jaNames=new Map(),moveRows=new Map();for(const line of namesCsv.split(/\r?\n/)){const m=line.match(/^(\d+),1,("(?:[^"]|"")*"|[^,]*)/);if(m)jaNames.set(+m[1],csvValue(m[2]))}for(const line of movesCsv.split(/\r?\n/)){const m=line.match(/^(\d+),(1|9),("(?:[^"]|"")*"|[^,]*)/);if(m){const row=moveRows.get(+m[1])||{};row[m[2]]=csvValue(m[3]);moveRows.set(+m[1],row)}}for(const row of moveRows.values())if(row[1]&&row[9])moveJa.set(normalize(row[9]),row[1]);const releasedIds=new Set(Object.values(released).map(x=>+x.id)),seen=new Set();catalog=pools.filter(x=>releasedIds.has(+x.pokemon_id)&&!seen.has(+x.pokemon_id)&&seen.add(+x.pokemon_id)).map(x=>({id:+x.pokemon_id,name:x.pokemon_name,ja:jaNames.get(+x.pokemon_id)||`図鑑番号 ${x.pokemon_id}`,sprite:`${SPRITES}${x.pokemon_id}.png`,art:`${SPRITES}other/home/${x.pokemon_id}.png`}));catalog.forEach(p=>{const o=document.createElement('option');o.value=p.ja;$('pokemonList').append(o)});if(!catalog.length)throw Error('図鑑データを取得できません')}
 function csvValue(s){return s.replace(/^"|"$/g,'').replace(/""/g,'"')}function normalize(s){return String(s).toLowerCase().replace(/[^a-z0-9]/g,'')}
 async function get(path){const r=await fetch(API+path);if(!r.ok)throw Error(`データ取得エラー (${r.status})`);return r.json()}
 
@@ -35,8 +39,32 @@ function mainComponent(mask,size){const seen=new Uint8Array(mask.length),best=[]
 function distance(a,b){return Math.sqrt(a.reduce((s,v,i)=>s+(v-b[i])**2,0))}
 async function localize(p){if(p.types)return;try{const detail=await fetch(`https://pokeapi.co/api/v2/pokemon/${p.id}`).then(r=>r.json());p.types=detail.types.map(t=>title(t.type.name))}catch{p.types=[]}}
 function renderCandidates(list){const grid=$('candidateGrid');grid.replaceChildren();list.forEach(p=>{const b=document.createElement('button');b.className='candidate';b.type='button';b.innerHTML=`<img src="${p.art||p.sprite}" alt=""><span>${escapeHtml(p.ja)}</span>`;b.onclick=()=>{grid.querySelectorAll('button').forEach(x=>x.classList.remove('selected'));b.classList.add('selected');selectPokemon(p)};grid.append(b)})}
-async function selectPokemon(p){if(!p.ja||!p.types)await localize(p);$('pokemonName').textContent=p.ja||p.name;$('recognition').textContent='選択済み';$('pokemonSelect').value=p.ja||p.name;showMoves(p)}
-function showMoves(p){const pool=movePools.filter(x=>+x.pokemon_id===p.id);if(!pool.length){$('moves').hidden=true;return}const allFast=[...new Set(pool.flatMap(x=>[...x.fast_moves,...x.elite_fast_moves]))],allCharged=[...new Set(pool.flatMap(x=>[...x.charged_moves,...x.elite_charged_moves]))];const fs=allFast.map(n=>fastMoves.find(m=>m.name===n)).filter(Boolean).sort((a,b)=>scoreFast(b,p.types)-scoreFast(a,p.types));const cs=allCharged.map(n=>chargedMoves.find(m=>m.name===n)).filter(Boolean).sort((a,b)=>scoreCharged(b,p.types)-scoreCharged(a,p.types));const ja=n=>moveJa.get(normalize(n))||'日本語名未収録';$('moveTitle').textContent=`${p.ja}を活かすなら`;$('fastMove').textContent=ja(fs[0]?.name||allFast[0]);$('chargedMoves').textContent=(cs.length?cs.slice(0,2).map(x=>ja(x.name)):allCharged.slice(0,2).map(ja)).join(' ／ ')||'データなし';$('moveNote').textContent='現在の技データから、タイプ一致・ダメージ効率・ゲージ効率を基準に算出した候補です。対戦リーグや相手によって最適解は変わります。';$('moves').hidden=false}
+async function selectPokemon(p){if(!p.ja||!p.types)await localize(p);currentPokemon=p;$('pokemonName').textContent=p.ja;$('recognition').textContent='選択済み';$('pokemonSelect').value=p.ja;const art=$('selectedPokemonArt');art.src=p.art||p.sprite;art.alt=`${p.ja}のイラスト`;art.hidden=false;setupForms(p)}
+function setupForms(p){const unique=new Map();for(const pool of movePools.filter(x=>+x.pokemon_id===p.id)){const key=pool.form||'Normal';if(!unique.has(key))unique.set(key,pool)}const forms=[...unique.keys()],select=$('formSelect');select.replaceChildren();forms.forEach((form,i)=>{const o=document.createElement('option');o.value=form;o.textContent=formLabel(form,i);select.append(o)});$('formPicker').hidden=forms.length<=1;showMoves(p,forms[0]||'Normal');updateOptimalIV(p,forms[0]||'Normal')}
+function formLabel(form,index){const key=String(form||'Normal').toLowerCase().replace(/[ -]/g,'_');return FORM_JA[key]||`別のすがた ${index+1}`}
+function showMoves(p,form){const pool=movePools.filter(x=>+x.pokemon_id===p.id&&(x.form||'Normal')===form);if(!pool.length){$('moves').hidden=true;return}const allFast=[...new Set(pool.flatMap(x=>[...x.fast_moves,...x.elite_fast_moves]))],allCharged=[...new Set(pool.flatMap(x=>[...x.charged_moves,...x.elite_charged_moves]))];const fs=allFast.map(n=>fastMoves.find(m=>m.name===n)).filter(Boolean).sort((a,b)=>scoreFast(b,p.types)-scoreFast(a,p.types));const cs=allCharged.map(n=>chargedMoves.find(m=>m.name===n)).filter(Boolean).sort((a,b)=>scoreCharged(b,p.types)-scoreCharged(a,p.types));const ja=n=>moveJa.get(normalize(n))||'日本語名未収録',forms=movePools.filter(x=>+x.pokemon_id===p.id),suffix=forms.length>1?`（${formLabel(form,[...new Set(forms.map(x=>x.form||'Normal'))].indexOf(form))}）`:'';$('moveTitle').textContent=`${p.ja}${suffix}を活かすなら`;$('fastMove').textContent=ja(fs[0]?.name||allFast[0]);$('chargedMoves').textContent=(cs.length?cs.slice(0,2).map(x=>ja(x.name)):allCharged.slice(0,2).map(ja)).join(' ／ ')||'データなし';$('moveNote').textContent='現在の技データから、タイプ一致・ダメージ効率・ゲージ効率を基準に算出した候補です。対戦リーグや相手によって最適解は変わります。';$('moves').hidden=false}
+function updateOptimalIV(p,form){
+  const sameId=pokemonStats.filter(x=>+(x.pokemon_id??x.id)===p.id),key=normalize(form||'Normal');
+  const stats=sameId.find(x=>normalize(x.form||'Normal')===key)||sameId.find(x=>normalize(x.form||'Normal')==='normal')||sameId[0];
+  const base=stats&&{attack:+(stats.base_attack??stats.attack),defense:+(stats.base_defense??stats.defense),stamina:+(stats.base_stamina??stats.stamina)};
+  if(!base||Object.values(base).some(x=>!Number.isFinite(x))||!cpms.length){$('ivPurpose').hidden=true;return}
+  const great=bestPvPIV(base,1500),ultra=bestPvPIV(base,2500);
+  const put=(prefix,best)=>{$(`${prefix}IV`).textContent=`${best.attack} / ${best.defense} / ${best.stamina}`;$(`${prefix}Detail`).textContent=`Lv.${best.level}・CP ${best.cp}`};
+  put('great',great);put('ultra',ultra);$('ivPurpose').hidden=false;
+}
+function bestPvPIV(base,cap){
+  let best={product:-1,attack:15,defense:15,stamina:15,level:50,cp:10};
+  for(let attack=0;attack<=15;attack++)for(let defense=0;defense<=15;defense++)for(let stamina=0;stamina<=15;stamina++){
+    for(let i=cpms.length-1;i>=0;i--){
+      const {level,multiplier:m}=cpms[i],cp=Math.max(10,Math.floor((base.attack+attack)*Math.sqrt(base.defense+defense)*Math.sqrt(base.stamina+stamina)*m*m/10));
+      if(cp>cap)continue;
+      const hp=Math.max(10,Math.floor((base.stamina+stamina)*m)),product=(base.attack+attack)*(base.defense+defense)*m*m*hp;
+      if(product>best.product)best={product,attack,defense,stamina,level,cp};
+      break;
+    }
+  }
+  return best;
+}
 function scoreFast(m,types){const stab=types.includes(m.type)?1.2:1;return stab*((+m.power||0)/Math.max(1,+m.duration)*1000+(+m.energy_delta||0)/Math.max(1,+m.duration)*250)}
 function scoreCharged(m,types){const stab=types.includes(m.type)?1.2:1;return stab*((+m.power||0)/Math.max(1,Math.abs(+m.energy_delta||100))*10+(+m.power||0)/Math.max(1,+m.duration)*1000)}
 function title(s){return s.charAt(0).toUpperCase()+s.slice(1)}function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
@@ -44,8 +72,33 @@ function title(s){return s.charAt(0).toUpperCase()+s.slice(1)}function escapeHtm
 function initCropEditor(){const c=$('cropCanvas');c.width=360;c.height=Math.round(360*currentBitmap.height/currentBitmap.width);cropRect={...DEFAULT_CROP};drawCrop();if(c.dataset.ready)return;c.dataset.ready='1';const point=e=>{const r=c.getBoundingClientRect();return{x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height}};c.addEventListener('pointerdown',e=>{cropStart=point(e);cropRect={x:cropStart.x,y:cropStart.y,w:.01,h:.01};c.setPointerCapture(e.pointerId);drawCrop()});c.addEventListener('pointermove',e=>{if(!cropStart)return;const p=point(e);cropRect={x:Math.max(0,Math.min(cropStart.x,p.x)),y:Math.max(0,Math.min(cropStart.y,p.y)),w:Math.min(1,Math.abs(p.x-cropStart.x)),h:Math.min(1,Math.abs(p.y-cropStart.y))};drawCrop()});c.addEventListener('pointerup',()=>{cropStart=null;if(cropRect.w<.08||cropRect.h<.08)cropRect={...DEFAULT_CROP};drawCrop()})}
 function drawCrop(){const c=$('cropCanvas'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);x.drawImage(currentBitmap,0,0,c.width,c.height);x.fillStyle='#071b2288';x.fillRect(0,0,c.width,c.height);const r={x:cropRect.x*c.width,y:cropRect.y*c.height,w:cropRect.w*c.width,h:cropRect.h*c.height};x.save();x.beginPath();x.rect(r.x,r.y,r.w,r.h);x.clip();x.drawImage(currentBitmap,0,0,c.width,c.height);x.restore();x.strokeStyle='#00e5ff';x.lineWidth=3;x.setLineDash([9,5]);x.strokeRect(r.x,r.y,r.w,r.h)}
 
-function analyze(bitmap){const w=600,h=Math.round(bitmap.height*w/bitmap.width),c=document.createElement('canvas');c.width=w;c.height=h;const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(bitmap,0,0,w,h);const p=x.getImageData(0,0,w,h).data,rows=[];for(let y=h*.735|0;y<h*.89;y++){let first=-1,last=-1,count=0;for(let xx=w*.09|0;xx<w*.5;xx++){const i=(y*w+xx)*4;if(isBar(p[i],p[i+1],p[i+2])){if(first<0)first=xx;last=xx;count++}}if(first>w*.105&&first<w*.15&&count>w*.075&&last-first>w*.11)rows.push({y,first,last,count})}const groups=[];for(const row of rows){const g=groups.at(-1);if(!g||row.y>g.at(-1).y+1)groups.push([row]);else g.push(row)}const bars=groups.filter(g=>g.length>=4).map(g=>g.reduce((a,b)=>b.count>a.count?b:a)).filter(b=>b.y>h*.75).slice(0,3);if(bars.length!==3)throw Error(`評価バーを3本検出できませんでした (${bars.length}本)`);const vals=bars.map(b=>Math.max(0,Math.min(15,Math.round(Math.max(0,Math.min(1,(b.last-w*.118+1)/(w*.465-w*.118)))*15))));drawPreview(bitmap,bars,h);return vals}
+function analyze(bitmap){
+  const w=600,h=Math.round(bitmap.height*w/bitmap.width),c=document.createElement('canvas');
+  c.width=w;c.height=h;
+  const x=c.getContext('2d',{willReadFrequently:true});
+  x.drawImage(bitmap,0,0,w,h);
+  const p=x.getImageData(0,0,w,h).data,rows=[];
+  for(let y=h*.735|0;y<h*.89;y++){
+    let first=-1,last=-1,colorCount=0,trackCount=0;
+    for(let xx=w*.09|0;xx<w*.5;xx++){
+      const i=(y*w+xx)*4,r=p[i],g=p[i+1],b=p[i+2];
+      if(isBar(r,g,b)){if(first<0)first=xx;last=xx;colorCount++}
+      if(xx>w*.11&&isTrack(r,g,b))trackCount++;
+    }
+    const startsCorrectly=first>w*.105&&first<w*.15;
+    const hasFullTrack=trackCount>w*.13;
+    const hasLongColor=colorCount>w*.075&&last-first>w*.11;
+    if(startsCorrectly&&colorCount>w*.006&&(hasFullTrack||hasLongColor))rows.push({y,first,last,count:colorCount,trackCount});
+  }
+  const groups=[];
+  for(const row of rows){const g=groups.at(-1);if(!g||row.y>g.at(-1).y+1)groups.push([row]);else g.push(row)}
+  const bars=groups.filter(g=>g.length>=4).map(g=>g.reduce((a,b)=>b.trackCount+b.count>a.trackCount+a.count?b:a)).filter(b=>b.y>h*.75).slice(0,3);
+  if(bars.length!==3)throw Error(`評価バーを3本検出できませんでした (${bars.length}本)`);
+  const vals=bars.map(b=>Math.max(0,Math.min(15,Math.round(Math.max(0,Math.min(1,(b.last-w*.118+1)/(w*.465-w*.118)))*15))));
+  drawPreview(bitmap,bars,h);return vals;
+}
 function isBar(r,g,b){return r>210&&g>105&&g<205&&b<145&&r-g>35||r>195&&g>75&&g<165&&b>75&&b<175&&r-g>45}
+function isTrack(r,g,b){const max=Math.max(r,g,b),min=Math.min(r,g,b);return max-min<18&&r>175&&r<242}
 function drawPreview(bitmap,bars,h){const o=$('preview');o.width=600;o.height=252;const x=o.getContext('2d');x.drawImage(bitmap,0,bitmap.height*.72,bitmap.width,bitmap.height*.2,0,0,o.width,o.height);x.strokeStyle='#00e5ff';x.lineWidth=3;x.setLineDash([8,5]);bars.forEach(b=>{const y=(b.y-h*.72)/(h*.2)*o.height;x.beginPath();x.moveTo(o.width*.108,y);x.lineTo(o.width*.475,y);x.stroke()})}
-function showResult([a,d,h]){const total=a+d+h;$('percent').textContent=`${Math.round(total/45*100)}%`;$('grade').textContent=total===45?'4★':total>=37?'3★':total>=30?'2★':total>=23?'1★':'0★';[['attack',a],['defense',d],['hp',h]].forEach(([n,v])=>{$(`${n}Text`).textContent=`${v} / 15`;$(`${n}Bar`).style.width=`${v/15*100}%`});$('picker').hidden=true;$('result').hidden=false;$('result').scrollIntoView({behavior:'smooth'})}
+function showResult([a,d,h]){const total=a+d+h;currentPokemon=null;$('formPicker').hidden=true;$('selectedPokemonArt').hidden=true;$('percent').textContent=`${Math.round(total/45*100)}%`;$('grade').textContent=total===45?'4★':total>=37?'3★':total>=30?'2★':total>=23?'1★':'0★';[['attack',a],['defense',d],['hp',h]].forEach(([n,v])=>{$(`${n}Text`).textContent=`${v} / 15`;$(`${n}Bar`).style.width=`${v/15*100}%`});$('picker').hidden=true;$('result').hidden=false;$('result').scrollIntoView({behavior:'smooth'})}
 if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js');
