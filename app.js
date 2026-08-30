@@ -2,14 +2,35 @@ const $=id=>document.getElementById(id),fileInput=$('file');
 const API='https://pogoapi.net/api/v1/',SPRITES='https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/',CSV='https://raw.githubusercontent.com/PokeAPI/pokeapi/master/data/v2/csv/',PVPOKE='https://raw.githubusercontent.com/pvpoke/pvpoke/master/src/data/rankings/all/overall/';
 const DEFAULT_CROP={x:0,y:.07,w:1,h:.325};
 let catalog=[],movePools=[],fastMoves=[],chargedMoves=[],pokemonStats=[],cpms=[],battleRankings=null,moveJa=new Map(),currentBitmap=null,cropRect=null,cropStart=null,visionModel=null,ocrWorker=null,currentPokemon=null,currentIV=null;
+const evolutionCache=new Map();
 const FORM_JA={normal:'通常のすがた',alola:'アローラのすがた',alolan:'アローラのすがた',galar:'ガラルのすがた',galarian:'ガラルのすがた',hisui:'ヒスイのすがた',hisuian:'ヒスイのすがた',paldea:'パルデアのすがた',paldean:'パルデアのすがた',origin:'オリジンフォルム',altered:'アナザーフォルム',attack:'アタックフォルム',defense:'ディフェンスフォルム',speed:'スピードフォルム',incarnate:'けしんフォルム',therian:'れいじゅうフォルム',aria:'ボイスフォルム',pirouette:'ステップフォルム',sunshine:'ポジフォルム',overcast:'ネガフォルム',east_sea:'ひがしのうみ',west_sea:'にしのうみ',midday:'まひるのすがた',midnight:'まよなかのすがた',dusk:'たそがれのすがた',solo:'たんどくのすがた',school:'むれたすがた',average:'ふつうのサイズ',small:'ちいさいサイズ',large:'おおきいサイズ',super:'とくだいサイズ'};
 FORM_JA.shadow='シャドウ';
 const EXTRA_CPMS=[[45.5,.817803806],[46,.82029999],[46.5,.822803778],[47,.82529999],[47.5,.82780375],[48,.83029999],[48.5,.832803753],[49,.835300028],[49.5,.837803755],[50,.84029999]];
+const MOVE_JA_ALIASES={
+  aurawheelelectric:'オーラぐるま（でんき）',
+  hydropumpblastoise:'ハイドロポンプ',
+  mystfire:'マジカルフレイム',
+  scaldblastoise:'ねっとう',
+  technoblastburn:'テクノバスター（ほのお）',
+  technoblastchill:'テクノバスター（こおり）',
+  technoblastnormal:'テクノバスター（ノーマル）',
+  technoblastshock:'テクノバスター（でんき）',
+  technoblastwater:'テクノバスター（みず）',
+  vicegrip:'はさむ',
+  watergunblastoise:'みずでっぽう',
+  weatherballfire:'ウェザーボール（ほのお）',
+  weatherballice:'ウェザーボール（こおり）',
+  weatherballnormal:'ウェザーボール（ノーマル）',
+  weatherballrock:'ウェザーボール（いわ）',
+  weatherballwater:'ウェザーボール（みず）',
+  wildboldstorm:'かみなりあらし',
+  wrapgreen:'まきつく',
+  wrappink:'まきつく'
+};
 const shadowIdsPromise=get('shadow_pokemon.json').then(x=>new Set(Object.values(x).map(p=>+p.id))).catch(()=>new Set());
 fileInput.addEventListener('change',handleFileChange);
-$('pokemonSelect').addEventListener('change',handlePokemonSearch);
+$('pokemonSelect').addEventListener('input',handlePokemonSearch);
 $('again').addEventListener('click',resetApp);
-$('rematch').addEventListener('click',rematchPokemon);
 $('formSelect').addEventListener('change',handleFormChange);
 
 async function handleFileChange(){
@@ -18,20 +39,12 @@ async function handleFileChange(){
   resetRecognitionUI();
   try{
     currentBitmap=await createImageBitmap(file);
-    cropRect=null;
     showResult(analyze(currentBitmap));
-    initCropEditor();
     await loadData();
-    const caught=await identifyByCatchText(currentBitmap);
-    if(caught){
-      await selectPokemon(caught);
-      $('recognition').textContent='捕獲情報から判定';
-      finishRecognition();
-      return;
-    }
-    setProgress('名前を読めなかったため画像で照合します');
-    $('pokemonName').textContent='画像照合中…';
-    await classify(currentBitmap);
+    finishRecognition();
+    $('pokemonName').textContent='日本語名を入力';
+    $('recognition').textContent='手動選択';
+    $('pokemonSelect').focus();
   }catch(error){
     finishRecognition();
     $('pokemonName').textContent='判定できませんでした';
@@ -46,7 +59,8 @@ function resetRecognitionUI(){
   $('scanStatus').hidden=false;
   $('candidates').hidden=true;
   $('nameFallback').hidden=true;
-  $('pokemonName').textContent='捕獲情報を読取中…';
+  $('scanStatus').querySelector('b').textContent='図鑑データを準備しています';
+  $('pokemonName').textContent='準備中…';
 }
 
 function finishRecognition(){
@@ -71,18 +85,6 @@ function resetApp(){
   $('moves').hidden=true;
   $('candidates').hidden=true;
   scrollTo({top:0,behavior:'smooth'});
-}
-
-async function rematchPokemon(){
-  if(!currentBitmap||!cropRect)return;
-  try{
-    $('scanStatus').hidden=false;
-    $('candidates').hidden=true;
-    await classify(currentBitmap,cropRect);
-  }catch(error){
-    $('scanStatus').hidden=true;
-    alert(`再照合できませんでした: ${error.message}`);
-  }
 }
 
 async function loadData(){
@@ -142,6 +144,7 @@ function parseMoveNames(csv){
     rows.set(+match[1],row);
   }
   for(const row of rows.values())if(row[1]&&row[9])names.set(normalize(row[9]),row[1]);
+  for(const [english,japanese] of Object.entries(MOVE_JA_ALIASES))names.set(english,japanese);
   return names;
 }
 
@@ -231,16 +234,19 @@ function showMoves(pokemon,form){
   const chargedNames=uniqueMoves(pools,'charged_moves','elite_charged_moves');
   const rankedFast=rankMoves(fastNames,fastMoves,move=>scoreFast(move,pokemon.types));
   const rankedCharged=rankMoves(chargedNames,chargedMoves,move=>scoreCharged(move,pokemon.types));
+  const selectedFast=rankedFast[0]?.name||fastNames[0];
+  const selectedCharged=(rankedCharged.length?rankedCharged.slice(0,2).map(move=>move.name):chargedNames.slice(0,2));
+  const hasLegacy=isLegacyMove(selectedFast,pools,'fast_moves','elite_fast_moves')||selectedCharged.some(name=>isLegacyMove(name,pools,'charged_moves','elite_charged_moves'));
   const suffix=form==='Normal'?'':`（${formLabel(form,0)}）`;
   $('moveTitle').textContent=`${pokemon.ja}${suffix}を活かすなら`;
-  $('fastMove').textContent=moveNameJa(rankedFast[0]?.name||fastNames[0]);
-  $('chargedMoves').textContent=(rankedCharged.length?rankedCharged.slice(0,2).map(move=>moveNameJa(move.name)):chargedNames.slice(0,2).map(moveNameJa)).join(' ／ ')||'データなし';
-  $('moveNote').textContent='現在の技データから、タイプ一致・ダメージ効率・ゲージ効率を基準に算出した候補です。対戦リーグや相手によって最適解は変わります。';
+  $('fastMove').textContent=formatMoveName(selectedFast,pools,'fast_moves','elite_fast_moves');
+  $('chargedMoves').textContent=selectedCharged.map(name=>formatMoveName(name,pools,'charged_moves','elite_charged_moves')).join(' ／ ')||'データなし';
+  $('moveNote').textContent=`現在の技データから、タイプ一致・ダメージ効率・ゲージ効率を基準に算出した候補です。${hasLegacy?'【レガシー】は期間限定技などで、通常のわざマシンでは覚えません。すごいわざマシンが必要です。':'対戦リーグや相手によって最適解は変わります。'}`;
   $('moves').hidden=false;
 }
 
 function uniqueMoves(pools,regularKey,eliteKey){
-  return [...new Set(pools.flatMap(pool=>[...pool[regularKey],...pool[eliteKey]]))];
+  return [...new Set(pools.flatMap(pool=>[...(pool[regularKey]||[]),...(pool[eliteKey]||[])]))];
 }
 
 function rankMoves(names,source,score){
@@ -248,6 +254,17 @@ function rankMoves(names,source,score){
 }
 
 function moveNameJa(name){return moveJa.get(normalize(name))||'日本語名未収録'}
+function isLegacyMove(name,pools,regularKey,eliteKey){
+  if(!name)return false;
+  const isRegular=pools.some(pool=>(pool[regularKey]||[]).includes(name));
+  const isElite=pools.some(pool=>(pool[eliteKey]||[]).includes(name));
+  return isElite&&!isRegular;
+}
+
+function formatMoveName(name,pools,regularKey,eliteKey){
+  const label=moveNameJa(name);
+  return isLegacyMove(name,pools,regularKey,eliteKey)?`${label}【レガシー】`:label;
+}
 function updateOptimalIV(p,form){
   const sameId=pokemonStats.filter(x=>+(x.pokemon_id??x.id)===p.id),key=normalize(form||'Normal');
   const stats=sameId.find(x=>normalize(x.form||'Normal')===key)||sameId.find(x=>normalize(x.form||'Normal')==='normal')||sameId[0];
@@ -258,6 +275,7 @@ function updateOptimalIV(p,form){
   const put=(prefix,best)=>{$(`${prefix}IV`).textContent=`${best.attack} / ${best.defense} / ${best.stamina}`;$(`${prefix}Detail`).textContent=`Lv.${best.level}・CP ${best.cp}`;$(`${prefix}OwnRank`).textContent=currentIV?`この個体: ${best.ownRank}位 / 4096（上位${(best.ownRank/4096*100).toFixed(1)}%）`:''};
   put('great',great);put('ultra',ultra);$('ivPurpose').hidden=false;
   updateSpeciesRankings(p,form);
+  updateEvolutionRankings(p,form);
 }
 function bestPvPIV(base,cap,own){
   const results=[];
@@ -280,17 +298,90 @@ function ensureRankingUI(){
   eyebrow.textContent='用途別・個体値と対戦ランキング';note.textContent='全体順位はPvPokeのオープンリーグ総合ランキングです。個体値順位は同じポケモンの4096通りをステータス積で比較しています。';
   [['great',cards[0]],['ultra',cards[1]],['master',cards[2]]].forEach(([prefix,card])=>{const rank=document.createElement('strong');rank.id=`${prefix}SpeciesRank`;rank.className='species-rank';rank.style.cssText='display:block;margin-top:9px;color:#ef6f63;font-size:11px';rank.textContent='全体順位を取得中…';card.append(rank);if(prefix!=='master'){const own=document.createElement('span');own.id=`${prefix}OwnRank`;own.className='own-rank';card.append(own)}});
   const master=document.createElement('span');master.textContent='個体値1位: 15 / 15 / 15';cards[2].append(master);
+  const evolutions=document.createElement('div');evolutions.id='evolutionRankings';evolutions.style.cssText='margin-top:16px;padding-top:16px;border-top:1px solid #dce5e3';section.insertBefore(evolutions,note);
 }
 async function updateSpeciesRankings(p,form){
   ['great','ultra','master'].forEach(x=>$(`${x}SpeciesRank`).textContent='全体順位を取得中…');
   try{
-    if(!battleRankings){const files=[1500,2500,10000];battleRankings=Object.fromEntries(await Promise.all(files.map(async cp=>{const r=await fetch(`${PVPOKE}rankings-${cp}.json`);if(!r.ok)throw Error('ランキングを取得できません');return[cp,await r.json()]})))}
-    const formKey=normalize(form||'normal'),suffix={alola:'alolan',galar:'galarian',hisui:'hisuian',paldea:'paldean'}[formKey]||formKey,base=normalize(p.name),wanted=suffix==='normal'?base:base+suffix;
+    await loadBattleRankings();
     for(const [prefix,cp] of [['great',1500],['ultra',2500],['master',10000]]){
-      const list=battleRankings[cp],index=list.findIndex(x=>normalize(x.speciesId)===wanted&&!x.speciesId.endsWith('_shadow'));
+      const list=battleRankings[cp],index=findBattleRank(list,p.name,form);
       $(`${prefix}SpeciesRank`).textContent=index>=0?`ポケモン全体: ${index+1}位 / ${list.length}（評価 ${list[index].score}）`:'全体ランキング対象外';
     }
   }catch(e){['great','ultra','master'].forEach(x=>$(`${x}SpeciesRank`).textContent='全体順位を取得できません');console.warn(e)}
+}
+async function loadBattleRankings(){
+  if(battleRankings)return battleRankings;
+  const files=[1500,2500,10000];
+  battleRankings=Object.fromEntries(await Promise.all(files.map(async cp=>{
+    const response=await fetch(`${PVPOKE}rankings-${cp}.json`);
+    if(!response.ok)throw Error('ランキングを取得できません');
+    return[cp,await response.json()];
+  })));
+  return battleRankings;
+}
+
+function battleSpeciesKey(name,form='Normal'){
+  const key=normalize(form),suffix={alola:'alolan',galar:'galarian',hisui:'hisuian',paldea:'paldean'}[key]||key;
+  return suffix==='normal'?normalize(name):normalize(name)+suffix;
+}
+
+function findBattleRank(list,name,form){
+  const wanted=battleSpeciesKey(name,form);
+  let index=list.findIndex(item=>normalize(item.speciesId)===wanted);
+  if(index<0&&normalize(form)!=='normal')index=list.findIndex(item=>normalize(item.speciesId)===normalize(name));
+  return index;
+}
+
+async function updateEvolutionRankings(pokemon,form){
+  const container=$('evolutionRankings');
+  container.textContent='進化先ランキングを取得中…';
+  try{
+    const [evolutions]=await Promise.all([getEvolutionTargets(pokemon),loadBattleRankings()]);
+    renderEvolutionRankings(container,evolutions,form);
+  }catch(error){
+    container.textContent='進化先ランキングを取得できません';
+    console.warn(error);
+  }
+}
+
+async function getEvolutionTargets(pokemon){
+  if(evolutionCache.has(pokemon.id))return evolutionCache.get(pokemon.id);
+  const speciesResponse=await fetch(`https://pokeapi.co/api/v2/pokemon-species/${pokemon.id}`);
+  if(!speciesResponse.ok)throw Error('進化情報を取得できません');
+  const species=await speciesResponse.json();
+  const chainResponse=await fetch(species.evolution_chain.url);
+  if(!chainResponse.ok)throw Error('進化情報を取得できません');
+  const chain=(await chainResponse.json()).chain;
+  const current=findEvolutionNode(chain,pokemon.name);
+  const names=current?collectEvolutionNames(current.evolves_to):[];
+  const targets=names.map(name=>catalog.find(item=>normalize(item.name)===normalize(name))).filter(Boolean);
+  evolutionCache.set(pokemon.id,targets);
+  return targets;
+}
+
+function findEvolutionNode(node,name){
+  if(normalize(node.species.name)===normalize(name))return node;
+  for(const child of node.evolves_to){const found=findEvolutionNode(child,name);if(found)return found}
+  return null;
+}
+
+function collectEvolutionNames(nodes){
+  return nodes.flatMap(node=>[node.species.name,...collectEvolutionNames(node.evolves_to)]);
+}
+
+function renderEvolutionRankings(container,evolutions,form){
+  container.replaceChildren();
+  const title=document.createElement('strong');title.textContent='進化先の対戦ランキング';title.style.cssText='display:block;margin-bottom:9px';container.append(title);
+  if(!evolutions.length){const empty=document.createElement('span');empty.textContent='このポケモンに進化先はありません';container.append(empty);return}
+  for(const pokemon of evolutions){
+    const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:10px;margin-top:8px;padding:9px;border-radius:12px;background:#fff';
+    const image=document.createElement('img');image.src=pokemon.art||pokemon.sprite;image.alt='';image.style.cssText='width:44px;height:44px;object-fit:contain';
+    const text=document.createElement('div'),name=document.createElement('b'),ranks=document.createElement('span');
+    name.textContent=pokemon.ja;name.style.display='block';
+    ranks.textContent=[['スーパー',1500],['ハイパー',2500],['マスター',10000]].map(([label,cp])=>{const index=findBattleRank(battleRankings[cp],pokemon.name,form);return`${label} ${index>=0?`${index+1}位`:'対象外'}`}).join(' ／ ');
+    text.append(name,ranks);row.append(image,text);container.append(row);
+  }
 }
 function scoreFast(m,types){const stab=types.includes(m.type)?1.2:1;return stab*((+m.power||0)/Math.max(1,+m.duration)*1000+(+m.energy_delta||0)/Math.max(1,+m.duration)*250)}
 function scoreCharged(m,types){const stab=types.includes(m.type)?1.2:1;return stab*((+m.power||0)/Math.max(1,Math.abs(+m.energy_delta||100))*10+(+m.power||0)/Math.max(1,+m.duration)*1000)}
