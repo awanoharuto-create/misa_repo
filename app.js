@@ -1,8 +1,9 @@
 const $=id=>document.getElementById(id),fileInput=$('file');
 const API='https://pogoapi.net/api/v1/',SPRITES='https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/',CSV='https://raw.githubusercontent.com/PokeAPI/pokeapi/master/data/v2/csv/',PVPOKE='https://raw.githubusercontent.com/pvpoke/pvpoke/master/src/data/rankings/all/overall/';
 const DEFAULT_CROP={x:0,y:.07,w:1,h:.325};
-let catalog=[],movePools=[],fastMoves=[],chargedMoves=[],pokemonStats=[],cpms=[],battleRankings=null,moveJa=new Map(),currentBitmap=null,cropRect=null,cropStart=null,visionModel=null,ocrWorker=null,currentPokemon=null,currentIV=null;
+let catalog=[],movePools=[],fastMoves=[],chargedMoves=[],pokemonStats=[],cpms=[],battleRankings=null,battleRankingsPromise=null,moveJa=new Map(),currentBitmap=null,cropRect=null,cropStart=null,visionModel=null,ocrWorker=null,currentPokemon=null,currentIV=null;
 const evolutionCache=new Map();
+const pvpIvCache=new Map();
 const FORM_JA={normal:'通常のすがた',alola:'アローラのすがた',alolan:'アローラのすがた',galar:'ガラルのすがた',galarian:'ガラルのすがた',hisui:'ヒスイのすがた',hisuian:'ヒスイのすがた',paldea:'パルデアのすがた',paldean:'パルデアのすがた',origin:'オリジンフォルム',altered:'アナザーフォルム',attack:'アタックフォルム',defense:'ディフェンスフォルム',speed:'スピードフォルム',incarnate:'けしんフォルム',therian:'れいじゅうフォルム',aria:'ボイスフォルム',pirouette:'ステップフォルム',sunshine:'ポジフォルム',overcast:'ネガフォルム',east_sea:'ひがしのうみ',west_sea:'にしのうみ',midday:'まひるのすがた',midnight:'まよなかのすがた',dusk:'たそがれのすがた',solo:'たんどくのすがた',school:'むれたすがた',average:'ふつうのサイズ',small:'ちいさいサイズ',large:'おおきいサイズ',super:'とくだいサイズ'};
 FORM_JA.shadow='シャドウ';
 const EXTRA_CPMS=[[45.5,.817803806],[46,.82029999],[46.5,.822803778],[47,.82529999],[47.5,.82780375],[48,.83029999],[48.5,.832803753],[49,.835300028],[49.5,.837803755],[50,.84029999]];
@@ -57,7 +58,6 @@ async function handleFileChange(){
 function resetRecognitionUI(){
   $('ivPurpose').hidden=true;
   $('scanStatus').hidden=false;
-  $('candidates').hidden=true;
   $('nameFallback').hidden=true;
   $('scanStatus').querySelector('b').textContent='図鑑データを準備しています';
   $('pokemonName').textContent='準備中…';
@@ -69,8 +69,35 @@ function finishRecognition(){
 }
 
 function handlePokemonSearch(event){
-  const pokemon=catalog.find(item=>item.ja===event.target.value);
-  if(pokemon)selectPokemon(pokemon);
+  const query=normalizeJapaneseSearch(event.target.value);
+  const matches=query?catalog
+    .filter(pokemon=>pokemon.searchKey.includes(query))
+    .sort((a,b)=>Number(b.searchKey.startsWith(query))-Number(a.searchKey.startsWith(query))||a.ja.length-b.ja.length)
+    .slice(0,8):[];
+  renderPokemonMatches(matches);
+  const exact=matches.find(pokemon=>pokemon.searchKey===query);
+  if(exact)choosePokemon(exact);
+}
+
+function normalizeJapaneseSearch(value){
+  return String(value).normalize('NFKC').toLowerCase().replace(/[ぁ-ゖ]/g,char=>String.fromCharCode(char.charCodeAt(0)+0x60)).replace(/[\s・･ー\-_'’]/g,'');
+}
+
+function renderPokemonMatches(matches){
+  const container=$('pokemonMatches');
+  container.replaceChildren(...matches.map(pokemon=>{
+    const button=document.createElement('button');
+    button.type='button';
+    button.textContent=pokemon.ja;
+    button.addEventListener('click',()=>choosePokemon(pokemon));
+    return button;
+  }));
+}
+
+function choosePokemon(pokemon){
+  $('pokemonSelect').value=pokemon.ja;
+  $('pokemonMatches').replaceChildren();
+  selectPokemon(pokemon);
 }
 
 function handleFormChange(event){
@@ -80,10 +107,11 @@ function handleFormChange(event){
 
 function resetApp(){
   fileInput.value='';
+  $('pokemonSelect').value='';
+  $('pokemonMatches').replaceChildren();
   $('result').hidden=true;
   $('picker').hidden=false;
   $('moves').hidden=true;
-  $('candidates').hidden=true;
   scrollTo({top:0,behavior:'smooth'});
 }
 
@@ -156,6 +184,7 @@ function buildCatalog(released,pools,japaneseNames){
       id:+item.pokemon_id,
       name:item.pokemon_name,
       ja:japaneseNames.get(+item.pokemon_id)||`図鑑番号 ${item.pokemon_id}`,
+      searchKey:normalizeJapaneseSearch(japaneseNames.get(+item.pokemon_id)||`図鑑番号 ${item.pokemon_id}`),
       sprite:`${SPRITES}${item.pokemon_id}.png`,
       art:`${SPRITES}other/home/${item.pokemon_id}.png`
     }));
@@ -278,6 +307,8 @@ function updateOptimalIV(p,form){
   updateEvolutionRankings(p,form);
 }
 function bestPvPIV(base,cap,own){
+  const cacheKey=[base.attack,base.defense,base.stamina,cap,own?.attack,own?.defense,own?.stamina].join(':');
+  if(pvpIvCache.has(cacheKey))return pvpIvCache.get(cacheKey);
   const results=[];
   for(let attack=0;attack<=15;attack++)for(let defense=0;defense<=15;defense++)for(let stamina=0;stamina<=15;stamina++){
     for(let i=cpms.length-1;i>=0;i--){
@@ -290,7 +321,9 @@ function bestPvPIV(base,cap,own){
   }
   results.sort((a,b)=>b.product-a.product||b.cp-a.cp||b.attack-a.attack);
   const ownIndex=own?results.findIndex(x=>x.attack===own.attack&&x.defense===own.defense&&x.stamina===own.stamina):-1;
-  return {...results[0],ownRank:ownIndex+1};
+  const result={...results[0],ownRank:ownIndex+1};
+  pvpIvCache.set(cacheKey,result);
+  return result;
 }
 function ensureRankingUI(){
   if($('greatSpeciesRank'))return;
@@ -312,13 +345,20 @@ async function updateSpeciesRankings(p,form){
 }
 async function loadBattleRankings(){
   if(battleRankings)return battleRankings;
+  if(battleRankingsPromise)return battleRankingsPromise;
   const files=[1500,2500,10000];
-  battleRankings=Object.fromEntries(await Promise.all(files.map(async cp=>{
+  battleRankingsPromise=Promise.all(files.map(async cp=>{
     const response=await fetch(`${PVPOKE}rankings-${cp}.json`);
     if(!response.ok)throw Error('ランキングを取得できません');
-    return[cp,await response.json()];
-  })));
-  return battleRankings;
+    const full=await response.json();
+    const compact=full.map(({speciesId,score})=>({key:normalize(speciesId),score}));
+    compact.rankByKey=new Map(compact.map((item,index)=>[item.key,index]));
+    return[cp,compact];
+  })).then(entries=>battleRankings=Object.fromEntries(entries)).catch(error=>{
+    battleRankingsPromise=null;
+    throw error;
+  });
+  return battleRankingsPromise;
 }
 
 function battleSpeciesKey(name,form='Normal'){
@@ -328,8 +368,8 @@ function battleSpeciesKey(name,form='Normal'){
 
 function findBattleRank(list,name,form){
   const wanted=battleSpeciesKey(name,form);
-  let index=list.findIndex(item=>normalize(item.speciesId)===wanted);
-  if(index<0&&normalize(form)!=='normal')index=list.findIndex(item=>normalize(item.speciesId)===normalize(name));
+  let index=list.rankByKey.get(wanted)??-1;
+  if(index<0&&normalize(form)!=='normal')index=list.rankByKey.get(normalize(name))??-1;
   return index;
 }
 
