@@ -31,6 +31,8 @@ const MOVE_JA_ALIASES={
 const shadowIdsPromise=get('shadow_pokemon.json').then(x=>new Set(Object.values(x).map(p=>+p.id))).catch(()=>new Set());
 fileInput.addEventListener('change',handleFileChange);
 $('pokemonSelect').addEventListener('input',handlePokemonSearch);
+$('pokemonSelect').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();confirmPokemonSearch()}});
+$('pokemonSearchButton').addEventListener('click',confirmPokemonSearch);
 $('again').addEventListener('click',resetApp);
 $('formSelect').addEventListener('change',handleFormChange);
 
@@ -42,9 +44,17 @@ async function handleFileChange(){
     currentBitmap=await createImageBitmap(file);
     showResult(analyze(currentBitmap));
     await loadData();
+    $('scanStatus').querySelector('b').textContent='画面下のポケモン名を読み取っています';
+    const caught=await identifyByCatchText(currentBitmap);
+    if(caught){
+      await selectPokemon(caught);
+      $('recognition').textContent='画面下の捕獲情報から判定';
+      finishRecognition();
+      return;
+    }
     finishRecognition();
-    $('pokemonName').textContent='日本語名を入力';
-    $('recognition').textContent='手動選択';
+    $('pokemonName').textContent='名前を読み取れませんでした';
+    $('recognition').textContent='手動検索できます';
     $('pokemonSelect').focus();
   }catch(error){
     finishRecognition();
@@ -70,13 +80,27 @@ function finishRecognition(){
 
 function handlePokemonSearch(event){
   const query=normalizeJapaneseSearch(event.target.value);
-  const matches=query?catalog
-    .filter(pokemon=>pokemon.searchKey.includes(query))
-    .sort((a,b)=>Number(b.searchKey.startsWith(query))-Number(a.searchKey.startsWith(query))||a.ja.length-b.ja.length)
-    .slice(0,8):[];
+  const matches=findPokemonMatches(query);
   renderPokemonMatches(matches);
   const exact=matches.find(pokemon=>pokemon.searchKey===query);
   if(exact)choosePokemon(exact);
+}
+
+function findPokemonMatches(query){
+  if(!query)return[];
+  return catalog
+    .filter(pokemon=>pokemon.searchKey.includes(query))
+    .sort((a,b)=>Number(b.searchKey.startsWith(query))-Number(a.searchKey.startsWith(query))||a.ja.length-b.ja.length)
+    .slice(0,8);
+}
+
+function confirmPokemonSearch(){
+  const query=normalizeJapaneseSearch($('pokemonSelect').value);
+  const matches=findPokemonMatches(query);
+  const exact=matches.find(pokemon=>pokemon.searchKey===query);
+  if(exact||matches.length===1){choosePokemon(exact||matches[0]);return}
+  renderPokemonMatches(matches);
+  $('pokemonSearchStatus').textContent=matches.length?'候補からポケモンを選んでください':'一致するポケモンが見つかりません';
 }
 
 function normalizeJapaneseSearch(value){
@@ -92,11 +116,13 @@ function renderPokemonMatches(matches){
     button.addEventListener('click',()=>choosePokemon(pokemon));
     return button;
   }));
+  $('pokemonSearchStatus').textContent=matches.length?`${matches.length}件の候補があります`:'文字を入力すると候補が表示されます';
 }
 
 function choosePokemon(pokemon){
   $('pokemonSelect').value=pokemon.ja;
   $('pokemonMatches').replaceChildren();
+  $('pokemonSearchStatus').textContent=`${pokemon.ja}を選択しました`;
   selectPokemon(pokemon);
 }
 
@@ -109,6 +135,7 @@ function resetApp(){
   fileInput.value='';
   $('pokemonSelect').value='';
   $('pokemonMatches').replaceChildren();
+  $('pokemonSearchStatus').textContent='文字を入力すると候補が表示されます';
   $('result').hidden=true;
   $('picker').hidden=false;
   $('moves').hidden=true;
@@ -205,7 +232,7 @@ function setProgress(s){$('scanProgress').textContent=s}
 function loadImage(src){return new Promise((resolve,reject)=>{const i=new Image;i.crossOrigin='anonymous';i.onload=()=>resolve(i);i.onerror=reject;i.src=src})}
 async function identifyByCatchText(bitmap){try{setProgress('「この○○を捕まえた」を日本語で読取中…');const image=catchTextCanvas(bitmap);let text='';if('TextDetector'in window)try{text=(await new TextDetector().detect(image)).map(x=>x.rawValue).join(' ')}catch{}if(!findJapaneseName(text)){await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js','Tesseract');if(!ocrWorker){ocrWorker=await Tesseract.createWorker('jpn',1,{logger:m=>{if(m.status==='recognizing text')setProgress(`捕獲情報を読取中… ${Math.round((m.progress||0)*100)}%`)}});await ocrWorker.setParameters({tessedit_pageseg_mode:Tesseract.PSM.SINGLE_BLOCK,preserve_interword_spaces:'1'})}text=(await ocrWorker.recognize(image)).data.text}console.info('捕獲情報OCR:',text);return findJapaneseName(text)}catch(e){console.warn('捕獲情報OCRを利用できません',e);return null}}
 function catchTextCanvas(bitmap){const r={x:.035,y:.855,w:.93,h:.14},c=document.createElement('canvas');c.width=1100;c.height=Math.round(1100*(bitmap.height*r.h)/(bitmap.width*r.w));const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(bitmap,bitmap.width*r.x,bitmap.height*r.y,bitmap.width*r.w,bitmap.height*r.h,0,0,c.width,c.height);const image=x.getImageData(0,0,c.width,c.height),d=image.data;let sum=0;for(let i=0;i<d.length;i+=4)sum+=(d[i]*.299+d[i+1]*.587+d[i+2]*.114);const mean=sum/(d.length/4);for(let i=0;i<d.length;i+=4){const g=d[i]*.299+d[i+1]*.587+d[i+2]*.114,v=g<mean*.88?0:255;d[i]=d[i+1]=d[i+2]=v}x.putImageData(image,0,0);return c}
-function findJapaneseName(raw){const text=normalizeJa(raw);const exact=[...catalog].sort((a,b)=>b.ja.length-a.ja.length).find(p=>text.includes(normalizeJa(p.ja)));if(exact)return exact;const m=text.match(/この(.{2,12}?)(?:を|お)(?:捕|つか)/);if(!m)return null;let best=null,score=99;for(const p of catalog){const d=levenshtein(m[1],normalizeJa(p.ja));if(d<score){score=d;best=p}}return best&&score<=Math.max(1,Math.floor(best.ja.length*.3))?best:null}
+function findJapaneseName(raw){const text=normalizeJa(raw);const exact=[...catalog].sort((a,b)=>b.ja.length-a.ja.length).find(p=>text.includes(normalizeJa(p.ja)));if(exact)return exact;const m=text.match(/この(.{2,15}?)(?:は|を|お)(?=\d{4}|\d{2}[\/／]|捕|つか)/)||text.match(/この(.{2,15}?)(?:を|お)(?:捕|つか)/);if(!m)return null;let best=null,score=99;for(const p of catalog){const d=levenshtein(m[1],normalizeJa(p.ja));if(d<score){score=d;best=p}}return best&&score<=Math.max(1,Math.floor(best.ja.length*.3))?best:null}
 function normalizeJa(s){return String(s).normalize('NFKC').replace(/[\s。、・「」『』()（）]/g,'')}
 function levenshtein(a,b){const row=Array.from({length:b.length+1},(_,i)=>i);for(let i=1;i<=a.length;i++){let prev=row[0];row[0]=i;for(let j=1;j<=b.length;j++){const old=row[j];row[j]=Math.min(row[j]+1,row[j-1]+1,prev+(a[i-1]===b[j-1]?0:1));prev=old}}return row[b.length]}
 function descriptorFromBitmap(b,r){return makeDescriptor(b,r)}function descriptorFromImage(img){return makeDescriptor(img,null)}
