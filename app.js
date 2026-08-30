@@ -526,4 +526,12 @@ function gradeFor(total){
   if(total>=23)return'1★';
   return'0★';
 }
-if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js');
+if('serviceWorker'in navigator&&location.protocol.startsWith('http')){
+  let reloadingForUpdate=false;
+  navigator.serviceWorker.addEventListener('controllerchange',()=>{
+    if(reloadingForUpdate)return;
+    reloadingForUpdate=true;
+    location.reload();
+  });
+  navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).catch(error=>console.warn('アプリ更新の確認に失敗しました',error));
+}
